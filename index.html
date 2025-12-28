@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sans Arena — No Healing</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:'Courier New',monospace}#canvas{border:2px solid #555;box-shadow:0 0 20px #ff2255}.screen{position:absolute;color:white;text-align:center;font-size:24px;background:rgba(0,0,0,.85);padding:30px;border:2px solid #ff5588;border-radius:10px;z-index:10;display:none}input{display:block;width:240px;margin:15px auto;padding:10px;font-size:18px;border:2px solid #88ff88;border-radius:6px;background:#111;color:white}button{display:block;margin:8px auto;padding:10px 20px;min-width:180px;font-size:18px;font-weight:bold;border:none;border-radius:6px;cursor:pointer;transition:all .2s}.btn-login{background:#55cc55;color:white}.btn-new{background:#ffaa55;color:#222}.btn-start{background:#ff5555;color:white}.btn-switch{background:#5588ff;color:white}.btn-achieve{background:#aa55ff;color:white;margin-top:15px}.btn-back{background:#555555;color:white}.color-opt,.shape-opt,.trail-opt{display:inline-block;margin:5px;padding:8px 12px;border:1px solid #555;border-radius:4px;cursor:pointer}.color-opt:hover,.shape-opt:hover,.trail-opt:hover{transform:scale(1.05);border-color:#88ff88}.selected{border-color:#88ff88;background:rgba(136,255,136,0.2)}#customScreen{padding:20px}.opt-section{margin:15px 0;text-align:left}#sansQuote{position:absolute;top:500px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#88ff88;padding:12px 20px;border:1px solid #88ff88;border-radius:6px;font-size:20px;z-index:100;opacity:0;pointer-events:none;max-width:500px;text-align:center}
+  </style>
+</head>
+<body>
+<canvas id="canvas" width="800" height="600"></canvas>
+<div id="sansQuote"></div>
+<div id="authScreen" class="screen" style="display:block;"><div>💀 Sans Arena</div><input id="usernameInput" type="text" placeholder="Enter your name" maxlength="16" autocomplete="off"><button id="loginBtn" class="btn-login">▶️ Continue</button><button id="newPlayerBtn" class="btn-new">🆕 New Player</button><div id="userList"></div></div>
+<div id="customScreen" class="screen"><div>🎨 Customize Your Soul</div><div class="opt-section"><div>Color:</div><div id="colorOptions"></div></div><div class="opt-section"><div>Shape:</div><div id="shapeOptions"></div></div><div class="opt-section"><div>Trail:</div><div id="trailOptions"></div></div><button id="saveCustomBtn" class="btn-login">💾 Save & Continue</button><button id="skipCustomBtn" class="btn-back">⏭️ Skip</button></div>
+<div id="startScreen" class="screen"><div>🎮 Welcome, <span id="displayName">-</span>!</div><button id="startBtn" class="btn-start">⚔️ Start Fight</button><div id="stats"></div><button id="achievementsBtn" class="btn-achieve">🏆 Achievements</button></div>
+<div id="achievementsScreen" class="screen"><div>🏆 Achievements</div><div id="achievementsList"></div><button id="backToStartBtn">⬅️ Back</button></div>
+<div id="gameOver" class="screen"><div>💀 You died.</div><div style="margin:15px 0;font-size:20px;"><div>Score: <span class="highlight" id="finalScore">0</span></div><div>Time: <span class="highlight" id="finalTime">0s</span></div><div>Dodges: <span class="highlight" id="finalDodges">0</span></div></div><button id="retryBtn" class="btn-start">↻ Try Again</button><button id="switchPlayerBtn" class="btn-switch">🔄 Switch Player</button><button id="menuBtn" class="btn-login">🏡 Main Menu</button></div>
+<script>
+// ✅ Wait for DOM
+window.addEventListener('load', () => {
+  // DB
+  class PlayerDB {
+    async save(p) { try { localStorage.setItem(`sans_player_${p.username}`, JSON.stringify(p)); } catch (e) {} }
+    async get(u) { try { const d = localStorage.getItem(`sans_player_${u}`); return d ? JSON.parse(d) : null; } catch (e) { return null; } }
+    async getAll() { try { return Object.keys(localStorage).filter(k => k.startsWith('sans_player_')).map(k => JSON.parse(localStorage.getItem(k))).filter(p => p); } catch (e) { return []; } }
+  }
+  const db = new PlayerDB();
+
+  // State
+  let gameState = 'auth', currentPlayer = null;
+  const canvas = document.getElementById('canvas'), ctx = canvas.getContext('2d'),
+    screens = { auth: document.getElementById('authScreen'), custom: document.getElementById('customScreen'), start: document.getElementById('startScreen'), achievements: document.getElementById('achievementsScreen'), gameOver: document.getElementById('gameOver') },
+    usernameInput = document.getElementById('usernameInput'), displayName = document.getElementById('displayName'), statsEl = document.getElementById('stats'),
+    finalScoreEl = document.getElementById('finalScore'), finalTimeEl = document.getElementById('finalTime'), finalDodgesEl = document.getElementById('finalDodges'), userListEl = document.getElementById('userList'),
+    colorOptions = document.getElementById('colorOptions'), shapeOptions = document.getElementById('shapeOptions'), trailOptions = document.getElementById('trailOptions');
+
+  let hp = 10, time = 0, blueMode = false, blueTime = 0, soulX = 385, soulY = 285, soulSpeed = 420,
+    keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, ArrowDown: false, Space: false },
+    bones = [], blasters = [], damagePopups = [], score = 0, dodges = 0, blueActivations = 0,
+    homingWavesSurvived = 0, lasersDodged = 0, horizontalDodged = 0, nextAttackTime = 0, animationId = null, SPEED_MULT = 1.3;
+
+  let gasterMode = false, gasterDrainTimer = 10;
+  const COLORS = { red: '#ff5555', blue: '#5588ff', green: '#55ff55', pink: '#ff55ff', yellow: '#ffff55', purple: '#aa55ff' };
+  const SHAPES = ['square', 'circle', 'diamond', 'star'];
+  const TRAILS = ['none', 'short', 'long'];
+  let soulColor = 'red', soulShape = 'square', soulTrail = 'none';
+  const trailHistory = [], MAX_TRAIL = 5;
+
+  // Gaster
+  window.gaster = () => { if (gameState === 'playing') gasterMode = !gasterMode; };
+
+  // Blaster & Attacks
+  class Blaster { constructor(x,y,a=0){this.x=x;this.y=y;this.angle=a;this.state='idle';this.timer=0;this.chargeTime=1.5;this.fireTime=0.2;this.cooldown=1.0}update(dt){this.timer+=dt;if(this.state==='idle'&&this.timer>1.0){this.state='charging';this.timer=0;}else if(this.state==='charging'&&this.timer>this.chargeTime){this.state='firing';this.timer=0;const r=this.angle*Math.PI/180,dx=Math.cos(r),dy=Math.sin(r);bones.push({type:'laser',x:this.x+dx*30,y:this.y+dy*30,vx:dx*700*SPEED_MULT,vy:dy*700*SPEED_MULT,w:6,h:6,age:0,maxAge:0.8,color:'#ff5555'});}else if(this.state==='firing'&&this.timer>this.fireTime){this.state='cooldown';this.timer=0;}else if(this.state==='cooldown'&&this.timer>this.cooldown){this.state='idle';this.timer=0;}}draw(){ctx.save();ctx.translate(this.x,this.y);ctx.rotate(this.angle*Math.PI/180);ctx.fillStyle='#000';ctx.beginPath();ctx.arc(0,0,18,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2.5;ctx.stroke();let s=6;if(this.state==='charging'){const t=this.timer/this.chargeTime;s=6+9*t;ctx.fillStyle=`rgb(255,${100+155*t},${50+205*t})`;}else if(this.state==='firing'){ctx.fillStyle='#ff5555';s=16;}else{ctx.fillStyle='#fff';}ctx.beginPath();ctx.arc(0,0,s,0,Math.PI*2);ctx.fill();ctx.restore();}}
+  let homingWaveId = 0;
+  function spawnVertical(){for(let i=0,c=4+~~(Math.random()*3);i<c;i++)bones.push({type:'bone',x:50+Math.random()*700,y:-30,vx:0,vy:286*SPEED_MULT,w:20,h:40,color:'#ffffff'});}
+  function spawnHoming(){homingWaveId++;[0,2.094,4.188].forEach((a,i)=>{const x=400+Math.cos(a)*40,y=-60+Math.sin(a)*40;bones.push({type:'homing',x,y,vx:0,vy:0,targetX:soulX+15,targetY:soulY+15,maxSpeed:312*SPEED_MULT,acceleration:306*SPEED_MULT,w:24,h:24,color:'#ff55ff',pulse:0,age:0,maxAge:8.0,waveId:homingWaveId});});}
+  function spawnZigzag(){for(let r=0;r<2;r++)for(let x=-80+(r%2)*200;x<880;x+=200)bones.push({type:'bone',x,y:120+r*160,vx:0,vy:0,w:70,h:8,oscillate:true,phase:r*Math.PI,amp:50,freq:2.6,color:'#55ff55'});}
+  function spawnConverge(){for(let i=0;i<5;i++){const a=i/5*Math.PI*2,dx=Math.cos(a),dy=Math.sin(a);bones.push({type:'bone',x:400+dx*400,y:300+dy*400,vx:-dx*208*SPEED_MULT,vy:-dy*208*SPEED_MULT,w:70,h:8,color:'#ffff55'});}}
+  function spawnRapidPulse(){for(let r=0;r<2;r++){const rad=60+r*90;for(let i=0;i<8;i++){const a=i/8*Math.PI*2,x=400+Math.cos(a)*rad,y=300+Math.sin(a)*rad,dx=Math.cos(a),dy=Math.sin(a);bones.push({type:'bone',x:x-25*dx,y:y-25*dy,vx:dx*195*SPEED_MULT,vy:dy*195*SPEED_MULT,w:50,h:8,color:'#ffaa55'});}}}
+  function spawnHorizontalHoming(){
+    const count=3+~~(Math.random()*2);
+    for(let i=0;i<count;i++){
+      const fromLeft=Math.random()>0.5;
+      const x=fromLeft?-20:820;
+      const y=50+Math.random()*500;
+      bones.push({
+        type:'horizontal_homing',x,y,vx:0,vy:0,targetX:soulX+15,targetY:soulY+15,
+        maxSpeed:400*SPEED_MULT,acceleration:250*SPEED_MULT,w:12,h:8,color:'#ffff55',age:0,maxAge:3.0
+      });
+    }
+  }
+  function spawnAttack(){
+    const attacks=[spawnVertical,spawnHoming,spawnZigzag,spawnConverge,spawnHorizontalHoming];
+    if(time>30)attacks.push(spawnRapidPulse);
+    attacks[~~(Math.random()*attacks.length)]();
+    nextAttackTime=time+0.3+Math.random()*0.5;
+  }
+
+  // Draw
+  function drawStar(ctx, cx, cy, size, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    const or = size / 2, ir = size / 4;
+    for (let i = 0; i < 5; i++) {
+      const a1 = (i * 72 - 90) * Math.PI / 180;
+      const a2 = ((i + 0.5) * 72 - 90) * Math.PI / 180;
+      const x1 = cx + Math.cos(a1) * or;
+      const y1 = cy + Math.sin(a1) * or;
+      const x2 = cx + Math.cos(a2) * ir;
+      const y2 = cy + Math.sin(a2) * ir;
+      if (i === 0) ctx.moveTo(x1, y1);
+      else ctx.lineTo(x1, y1);
+      ctx.lineTo(x2, y2);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  function drawSoul(){
+    const x=soulX,y=soulY,size=30;
+    const color=gasterMode?'#ffffff':(COLORS[soulColor]||'#ff5555');
+    
+    trailHistory.unshift({x:x+size/2,y:y+size/2});
+    if(trailHistory.length>MAX_TRAIL)trailHistory.pop();
+    
+    if(soulTrail!=='none'){
+      const count=soulTrail==='short'?3:5;
+      for(let i=1;i<Math.min(count,trailHistory.length);i++){
+        const p=trailHistory[i];
+        const alpha=1-i/count*0.7;
+        const scale=1-i/count*0.5;
+        ctx.globalAlpha=alpha;
+        ctx.fillStyle=color;
+        
+        if(soulShape==='circle'){
+          ctx.beginPath();ctx.arc(p.x,p.y,size/2*scale,0,Math.PI*2);ctx.fill();
+        }else if(soulShape==='diamond'){
+          ctx.save();ctx.translate(p.x,p.y);ctx.rotate(Math.PI/4);
+          ctx.fillRect(-size/2*scale,-size/2*scale,size*scale,size*scale);
+          ctx.restore();
+        }else if(soulShape==='star'){
+          drawStar(ctx,p.x,p.y,size*scale,color);
+        }else{
+          ctx.fillRect(p.x-size/2*scale,p.y-size/2*scale,size*scale,size*scale);
+        }
+      }
+      ctx.globalAlpha=1;
+    }
+    
+    ctx.strokeStyle=color;
+    ctx.lineWidth=2.5;
+    const fillStyle=gasterMode?'rgba(0,0,0,0.3)':'rgba(255,255,255,0.15)';
+    ctx.fillStyle=fillStyle;
+    
+    if(soulShape==='circle'){
+      ctx.beginPath();ctx.arc(x+size/2,y+size/2,size/2,0,Math.PI*2);ctx.fill();ctx.stroke();
+    }else if(soulShape==='diamond'){
+      ctx.save();ctx.translate(x+size/2,y+size/2);ctx.rotate(Math.PI/4);
+      ctx.fillRect(-size/2,-size/2,size,size);ctx.strokeRect(-size/2,-size/2,size,size);ctx.restore();
+    }else if(soulShape==='star'){
+      drawStar(ctx,x+size/2,y+size/2,size,color);
+      ctx.strokeStyle=color;ctx.lineWidth=2.5;
+      drawStar(ctx,x+size/2,y+size/2,size,'rgba(0,0,0,0)');
+      ctx.stroke();
+    }else{
+      ctx.beginPath();ctx.rect(x,y,size,size);ctx.fill();ctx.stroke();
+    }
+    
+    if(gasterMode){
+      ctx.fillStyle='#ff5555';
+      ctx.font='bold 14px Courier New';
+      ctx.fillText('G',x+size-10,y+18);
+    }
+  }
+
+  // Quotes & Achievements
+  const QUOTES = {
+    dodgeStreak: ["heh. looks like you've got the hang of it.", "not bad. for a skeleton, i'm pretty fast, huh?", "you're getting better. scary."],
+    blueMode: ["bet you didn't see *that* coming.", "well. guess it's my turn.", "oops. did i do that?"],
+    homingDodge: ["nice dodge.", "you can run... but you can't hide.", "determination is impressive. useless, but impressive."],
+    lowHP: ["you're not looking so great there, pal.", "heya. you look tired.", "i wonder how many hp you have left?"],
+    death: ["you died.", "it's a beautiful day outside. birds are singing...", "well. here goes nothing."],
+    gasterOn: ["…determination detected.", "gaster mode: time slows on dodge. hp drains after 10s.", "type 'gaster' again to disable."]
+  };
+  function sayQuote(type) {
+    const quote = QUOTES[type][Math.floor(Math.random() * QUOTES[type].length)];
+    const el = document.getElementById('sansQuote');
+    el.textContent = `"${quote}" — sans`;
+    el.style.opacity = '0';
+    setTimeout(() => { el.style.transition = 'opacity 0.3s'; el.style.opacity = '1'; }, 50);
+    setTimeout(() => { el.style.opacity = '0'; }, 5000);
+  }
+  const ACHIEVEMENTS = [
+    { id: 'first_dodge', name: "First Dodge", desc: "Dodge your first bone" },
+    { id: '100_score', name: "Getting Started", desc: "Reach 100 score" },
+    { id: 'blue_master', name: "Blue Master", desc: "Use Blue Mode 10 times" },
+    { id: '30s_survivor', name: "Half-Minute Hero", desc: "Survive 30 seconds" },
+    { id: 'homing_survivor', name: "Homing Survivor", desc: "Survive a homing wave" },
+    { id: 'horizontal_dodger', name: "Needle Dodger", desc: "Dodge 20 horizontal homing bones" },
+    { id: '1000_score', name: "Sans' Nemesis", desc: "Reach 1000 score" },
+    { id: 'no_damage_run', name: "Flawless", desc: "Finish with 10 HP" },
+    { id: '50s_survivor', name: "Minute Closer", desc: "Survive 50 seconds" },
+    { id: 'ultimate_survivor', name: "Ultimate Survivor", desc: "Survive 60 seconds" }
+  ];
+  function checkAchievements(p, run = {}) {
+    const u = [];
+    ACHIEVEMENTS.forEach(a => {
+      if (p.achievements.includes(a.id)) return;
+      let x = false;
+      switch (a.id) {
+        case 'first_dodge': x = p.totalDodges >= 1; break;
+        case '100_score': x = p.bestScore >= 100; break;
+        case 'blue_master': x = p.blueActivations >= 10; break;
+        case '30s_survivor': x = p.longestTime >= 30; break;
+        case 'homing_survivor': x = p.homingSurvived >= 1; break;
+        case 'horizontal_dodger': x = (run.horizontalDodged || 0) >= 20; break;
+        case '1000_score': x = p.bestScore >= 1000; break;
+        case 'no_damage_run': x = run.finalHP === 10; break;
+        case '50s_survivor': x = p.longestTime >= 50; break;
+        case 'ultimate_survivor': x = p.longestTime >= 60; break;
+      }
+      if (x) { p.achievements.push(a.id); u.push(a.name); }
+    });
+    return u;
+  }
+  function showAchievement(n) {
+    const e = document.createElement('div');
+    e.innerHTML = `🏆 <b>${n}</b>`;
+    Object.assign(e.style, {
+      position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+      background: '#aa55ff', color: 'white', padding: '10px 20px',
+      borderRadius: '6px', fontWeight: 'bold', zIndex: '100',
+      boxShadow: '0 0 10px #ff55ff', pointerEvents: 'none'
+    });
+    document.body.appendChild(e);
+    setTimeout(() => e.remove(), 2500);
+  }
+  function renderAchievements(p) {
+    if (!p || !p.achievements) return;
+    document.getElementById('achievementsList').innerHTML = ACHIEVEMENTS.map(a =>
+      `<div class="${p.achievements.includes(a.id) ? 'ach-unlocked' : 'ach-locked'}">
+        ${p.achievements.includes(a.id) ? '✅' : '🔒'} <b>${a.name}</b><br><small>${a.desc}</small>
+      </div>`
+    ).join('');
+  }
+
+  // Stats UI
+  function updateStatsUI() {
+    if (!currentPlayer) return;
+    displayName.textContent = currentPlayer.username;
+    statsEl.innerHTML = `
+      <div class="stat">🏆 Best Score: <span class="highlight">${currentPlayer.bestScore}</span></div>
+      <div class="stat">⏱️ Longest Run: <span class="highlight">${currentPlayer.longestTime.toFixed(1)}s</span></div>
+      <div class="stat">🎯 Total Dodges: <span class="highlight">${currentPlayer.totalDodges.toLocaleString()}</span></div>
+      ${currentPlayer.trueEnding ? '<div class="stat">👑 True Ending: <span class="highlight">UNLOCKED</span></div>' : ''}
+    `;
+    renderAchievements(currentPlayer);
+  }
+
+  // Game Logic
+  function triggerTrueEnding() {
+    gameState = 'ending';
+    cancelAnimationFrame(animationId);
+    
+    let fade = 0;
+    const fadeOut = setInterval(() => {
+      fade += 0.02;
+      ctx.fillStyle = `rgba(0,0,0,${fade})`;
+      ctx.fillRect(0, 0, 800, 600);
+      if (fade >= 1) {
+        clearInterval(fadeOut);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '28px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('sans', 400, 300);
+        setTimeout(() => { ctx.fillText('…well. guess it’s my turn.', 400, 350); }, 1000);
+        setTimeout(() => { ctx.fillStyle = '#ff5555'; ctx.fillText('no.', 400, 400); }, 2500);
+        setTimeout(() => { ctx.fillStyle = '#88ff88'; ctx.fillText('you’ve earned this.', 400, 450); }, 4000);
+        setTimeout(() => {
+          if (currentPlayer) {
+            currentPlayer.trueEnding = true;
+            db.save(currentPlayer);
+          }
+          hideAllScreens();
+          screens.gameOver.style.display = 'block';
+          document.querySelector('#gameOver>div:first-child').textContent = '👑 True Pacifist Ending';
+          document.querySelector('#gameOver>div:first-child').style.color = '#ffd700';
+          finalScoreEl.textContent = score.toFixed(0);
+          finalTimeEl.textContent = time.toFixed(1) + 's';
+          finalDodgesEl.textContent = dodges;
+        }, 6000);
+      }
+    }, 30);
+  }
+
+  function endGame() {
+    gameState = 'gameover';
+    cancelAnimationFrame(animationId);
+    
+    const finalScore = Math.floor(score);
+    const run = { finalHP: hp, blueUses: blueActivations, lasersDodged, horizontalDodged };
+    
+    if (currentPlayer) {
+      currentPlayer.bestScore = Math.max(currentPlayer.bestScore, finalScore);
+      currentPlayer.longestTime = Math.max(currentPlayer.longestTime, time);
+      currentPlayer.totalDodges += dodges;
+      currentPlayer.blueActivations += blueActivations;
+      currentPlayer.homingSurvived += homingWavesSurvived;
+      
+      checkAchievements(currentPlayer, run).forEach(showAchievement);
+      db.save(currentPlayer);
+      updateStatsUI();
+    }
+    
+    finalScoreEl.textContent = finalScore;
+    finalTimeEl.textContent = time.toFixed(1) + 's';
+    finalDodgesEl.textContent = dodges;
+    
+    hideAllScreens();
+    screens.gameOver.style.display = 'block';
+  }
+
+  function gameLoop(ts) {
+    if (gameState !== 'playing') return;
+    const d = Math.min(0.1, (ts - (lastTimestamp || ts)) / 1000);
+    lastTimestamp = ts; time += d; score += 10 * d;
+    const dt = d * (blueMode || gasterMode ? 0.5 : 1);
+    
+    if (gasterMode) {
+      if (gasterDrainTimer > 0) { gasterDrainTimer -= d; if (gasterDrainTimer <= 0) { hp -= 0.5; gasterDrainTimer = 3; } }
+    }
+    
+    if (keys.Space && !keys.prevSpace) {
+      blueMode = !blueMode;
+      blueTime = blueMode ? 5 : 0;
+      if (blueMode) blueActivations++;
+      sayQuote('blueMode');
+    }
+    keys.prevSpace = keys.Space;
+    if (blueMode) blueTime = Math.max(0, blueTime - d);
+    
+    const s = soulSpeed * (blueMode || gasterMode ? 1.5 : 1);
+    if (keys.ArrowLeft) soulX = Math.max(0, soulX - s * d);
+    if (keys.ArrowRight) soulX = Math.min(770, soulX + s * d);
+    if (keys.ArrowUp) soulY = Math.max(0, soulY - s * d);
+    if (keys.ArrowDown) soulY = Math.min(570, soulY + s * (blueMode || gasterMode ? -1 : 1) * d);
+    
+    if (time >= nextAttackTime) spawnAttack();
+    blasters.forEach(b => b.update(dt));
+    
+    for (let i = bones.length - 1; i >= 0; i--) {
+      const b = bones[i]; let c = false;
+      if (b.type === 'homing' || b.type === 'horizontal_homing') {
+        b.targetX = soulX + 15; b.targetY = soulY + 15;
+        const dx = b.targetX - b.x, dy = b.targetY - b.y, dd = Math.sqrt(dx * dx + dy * dy);
+        if (dd > 1) {
+          const ax = dx / dd * b.acceleration * dt, ay = dy / dd * b.acceleration * dt;
+          b.vx += ax; b.vy += ay;
+          const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+          if (sp > b.maxSpeed) { b.vx = b.vx / sp * b.maxSpeed; b.vy = b.vy / sp * b.maxSpeed; }
+        }
+        b.x += b.vx * dt; b.y += b.vy * dt;
+        if (b.type === 'homing') b.pulse = (b.pulse + dt * 10) % (Math.PI * 2);
+        b.age += dt;
+        if (b.type === 'homing' && b.age >= b.maxAge && !c && b.waveId === homingWaveId) homingWavesSurvived++;
+        if (b.age >= b.maxAge) { bones.splice(i, 1); continue; }
+      } else if (b.oscillate) b.x = 400 + Math.sin(time * b.freq + b.phase) * b.amp;
+      else b.x += b.vx * dt, b.y += b.vy * dt;
+      
+      const h = soulX < b.x + b.w && soulX + 30 > b.x && soulY < b.y + b.h && soulY + 30 > b.y;
+      if (h) {
+        hp--; 
+        if (hp <= 2) sayQuote('lowHP');
+        damagePopups.push({ text: '-1', x: soulX + 15, y: soulY, age: 0, color: '#ff5555' });
+      } else {
+        dodges++;
+        if (b.type === 'laser') lasersDodged++;
+        if (b.type === 'horizontal_homing') { horizontalDodged++; if (horizontalDodged % 5 === 0) sayQuote('homingDodge'); }
+      }
+      
+      if ((b.type === 'laser' || b.type === 'horizontal_homing') && b.age > b.maxAge) bones.splice(i, 1);
+      else if (h || (b.type !== 'homing' && b.type !== 'horizontal_homing' && (b.x < -200 || b.x > 1000 || b.y < -200 || b.y > 800))) bones.splice(i, 1);
+    }
+    
+    for (let i = damagePopups.length - 1; i >= 0; i--) {
+      damagePopups[i].age += d; damagePopups[i].y -= 70 * d;
+      if (damagePopups[i].age > 1) damagePopups.splice(i, 1);
+    }
+    
+    // True Ending at 800
+    if (score >= 800 && !currentPlayer?.trueEnding) {
+      triggerTrueEnding();
+      return;
+    }
+    
+    if (hp <= 0) {
+      sayQuote('death');
+      endGame();
+      return;
+    }
+    
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 800, 600);
+    bones.forEach(b => {
+      if (b.type === 'homing') {
+        const r = 12 + Math.sin(b.pulse * 1.2) * 4;
+        ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(b.x - 6, b.y - 2, 2, 0, Math.PI * 2); ctx.arc(b.x + 6, b.y - 2, 2, 0, Math.PI * 2); ctx.fill();
+      } else if (b.type === 'horizontal_homing') {
+        ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, b.w, b.h);
+      } else {
+        ctx.fillStyle = b.color || '#fff'; ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+    });
+    blasters.forEach(b => b.draw());
+    drawSoul();
+    ctx.fillStyle = '#fff'; ctx.font = '18px Courier New'; ctx.fillText(`HP: ${hp.toFixed(1)}/10`, 20, 28); ctx.fillText(`SCORE: ${Math.floor(score)}`, 20, 52); ctx.fillText(`TIME: ${time.toFixed(1)}s`, 20, 76);
+    if (blueMode) { const w = blueTime / 5 * 80; ctx.fillStyle = '#5588ff'; ctx.fillRect(20, 94, w, 6); ctx.strokeStyle = '#fff'; ctx.strokeRect(20, 94, 80, 6); }
+    if (gasterMode) { ctx.fillStyle = '#ff5555'; ctx.fillText(`GASTER ${gasterDrainTimer > 0 ? '(safe)' : '(draining)'}`, 20, 112); }
+    ctx.textAlign = 'center'; damagePopups.forEach(p => { ctx.globalAlpha = Math.max(0, 1 - p.age); ctx.fillStyle = p.color; ctx.font = '22px Courier New'; ctx.fillText(p.text, p.x, p.y); }); ctx.globalAlpha = 1; ctx.textAlign = 'left';
+    animationId = requestAnimationFrame(gameLoop);
+  }
+  let lastTimestamp = 0;
+
+  function initGame() {
+    hp = 10; time = 0; blueMode = false; blueTime = 0; soulX = 385; soulY = 285;
+    score = 0; dodges = 0; blueActivations = 0; homingWavesSurvived = 0; lasersDodged = 0; horizontalDodged = 0;
+    bones = []; blasters = []; damagePopups = []; trailHistory.length = 0;
+    gasterMode = false; gasterDrainTimer = 10;
+    blasters = [new Blaster(180, 180), new Blaster(620, 150, 25), new Blaster(400, 480, -25)];
+    nextAttackTime = 0.5;
+    gameState = 'playing';
+    hideAllScreens();
+    lastTimestamp = performance.now();
+    animationId = requestAnimationFrame(gameLoop);
+  }
+
+  function hideAllScreens() {
+    Object.values(screens).forEach(s => s.style.display = 'none');
+  }
+
+  // Load Player
+  async function loadPlayer(username, forceNew = false) {
+    try {
+      if (!username?.trim()) return;
+      username = username.trim().slice(0, 16);
+      let player = forceNew ? null : await db.get(username);
+      if (!player) {
+        player = {
+          username, bestScore: 0, longestTime: 0, totalDodges: 0,
+          blueActivations: 0, homingSurvived: 0, achievements: [],
+          soulColor: 'red', soulShape: 'square', soulTrail: 'none',
+          createdAt: Date.now()
+        };
+      }
+      
+      currentPlayer = player;
+      soulColor = player.soulColor || 'red';
+      soulShape = player.soulShape || 'square';
+      soulTrail = player.soulTrail || 'none';
+      trailHistory.length = 0;
+      gasterMode = false; gasterDrainTimer = 10;
+      
+      updateStatsUI();
+      
+      setTimeout(() => {
+        hideAllScreens();
+        renderCustomScreen();
+        screens.custom.style.display = 'block';
+        gameState = 'custom';
+      }, 0);
+    } catch (e) {
+      alert("Load failed. Try again.");
+    }
+  }
+
+  function renderCustomScreen() {
+    colorOptions.innerHTML = '';
+    Object.keys(COLORS).forEach(key => {
+      const div = document.createElement('div');
+      div.className = 'color-opt' + (soulColor === key ? ' selected' : '');
+      div.style.backgroundColor = COLORS[key];
+      div.dataset.value = key;
+      div.textContent = key.charAt(0).toUpperCase() + key.slice(1);
+      div.addEventListener('click', () => {
+        document.querySelectorAll('.color-opt').forEach(d => d.classList.remove('selected'));
+        div.classList.add('selected');
+        soulColor = key;
+      });
+      colorOptions.appendChild(div);
+    });
+    
+    shapeOptions.innerHTML = '';
+    SHAPES.forEach(key => {
+      const div = document.createElement('div');
+      div.className = 'shape-opt' + (soulShape === key ? ' selected' : '');
+      div.dataset.value = key;
+      div.textContent = key.charAt(0).toUpperCase() + key.slice(1);
+      div.addEventListener('click', () => {
+        document.querySelectorAll('.shape-opt').forEach(d => d.classList.remove('selected'));
+        div.classList.add('selected');
+        soulShape = key;
+      });
+      shapeOptions.appendChild(div);
+    });
+    
+    trailOptions.innerHTML = '';
+    TRAILS.forEach(key => {
+      const div = document.createElement('div');
+      div.className = 'trail-opt' + (soulTrail === key ? ' selected' : '');
+      div.dataset.value = key;
+      div.textContent = key.charAt(0).toUpperCase() + key.slice(1);
+      div.addEventListener('click', () => {
+        document.querySelectorAll('.trail-opt').forEach(d => d.classList.remove('selected'));
+        div.classList.add('selected');
+        soulTrail = key;
+      });
+      trailOptions.appendChild(div);
+    });
+  }
+
+  async function refreshUsers() {
+    try {
+      const players = await db.getAll();
+      userListEl.innerHTML = players.length ? 
+        players.map(p => `<div class="user-item" data-username="${p.username}">→ ${p.username}</div>`).join('') :
+        '<div>No players</div>';
+      
+      userListEl.addEventListener('click', (e) => {
+        if (e.target.classList.contains('user-item')) {
+          const username = e.target.dataset.username;
+          loadPlayer(username, false);
+        }
+      });
+    } catch (e) {
+      userListEl.innerHTML = '<div>Load failed</div>';
+    }
+  }
+
+  // Screens
+  function showStartScreen() {
+    updateStatsUI();
+    hideAllScreens();
+    screens.start.style.display = 'block';
+    gameState = 'menu';
+  }
+
+  function showCustomScreen() {
+    updateStatsUI();
+    hideAllScreens();
+    renderCustomScreen();
+    screens.custom.style.display = 'block';
+    gameState = 'custom';
+  }
+
+  function showAchievementsScreen() {
+    updateStatsUI();
+    hideAllScreens();
+    screens.achievements.style.display = 'block';
+  }
+
+  // Events
+  document.getElementById('loginBtn').addEventListener('click', () => 
+    loadPlayer(usernameInput.value, false)
+  );
+  
+  document.getElementById('newPlayerBtn').addEventListener('click', () => 
+    loadPlayer(usernameInput.value, true)
+  );
+  
+  document.getElementById('saveCustomBtn').addEventListener('click', () => {
+    if (currentPlayer) {
+      currentPlayer.soulColor = soulColor;
+      currentPlayer.soulShape = soulShape;
+      currentPlayer.soulTrail = soulTrail;
+      db.save(currentPlayer);
+    }
+    showStartScreen();
+  });
+  
+  document.getElementById('skipCustomBtn').addEventListener('click', showStartScreen);
+  document.getElementById('startBtn').addEventListener('click', initGame);
+  document.getElementById('retryBtn').addEventListener('click', initGame);
+  document.getElementById('switchPlayerBtn').addEventListener('click', () => {
+    hideAllScreens();
+    screens.auth.style.display = 'block';
+    gameState = 'auth';
+  });
+  document.getElementById('menuBtn').addEventListener('click', showStartScreen);
+  document.getElementById('achievementsBtn').addEventListener('click', showAchievementsScreen);
+  document.getElementById('backToStartBtn').addEventListener('click', showStartScreen);
+
+  window.addEventListener('keydown', e => {
+    if (e.key in keys) keys[e.key] = true;
+    if (e.key === ' ') { keys.Space = true; e.preventDefault(); }
+  });
+  
+  window.addEventListener('keyup', e => {
+    if (e.key in keys) keys[e.key] = false;
+    if (e.key === ' ') { keys.Space = false; e.preventDefault(); }
+  });
+
+  refreshUsers();
+});
+</script>
+</body>
+</html>
